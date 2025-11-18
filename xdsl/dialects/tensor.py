@@ -24,6 +24,7 @@ from xdsl.dialects.utils import (
 )
 
 from xdsl.dialects.utils.dynamic_index_list import (
+    DynamicIndexList,
     verify_dynamic_index_list,
     parse_dynamic_index_list_without_types,
     print_dynamic_index_list,
@@ -438,6 +439,8 @@ class ExtractSliceOp(IRDLOperation):
         "custom<DynamicIndexList>($strides, $static_strides)"
         "attr-dict `:` type($source) `to` type($result)"
     )
+
+    custom_directives = (DynamicIndexList,)
 
     @staticmethod
     def from_static_parameters(
