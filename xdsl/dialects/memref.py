@@ -1087,7 +1087,39 @@ class CopyOp(IRDLOperation):
             raise VerifyException(
                 "Expected source and destination to have the same element type."
             )
+        
+    @classmethod
+    def parse(cls, parser: Parser) -> "CopyOp":
+        # memref.copy %src, %dst : memref<...> to memref<...>
+        u_src = parser.parse_unresolved_operand()
+        parser.parse_characters(",")
+        u_dst = parser.parse_unresolved_operand()
 
+        attrs = parser.parse_optional_attr_dict()
+
+        parser.parse_punctuation(":")
+        src_ty = parser.parse_attribute()      # 例如 memref<?xf32, strided<[1], offset: ?>>
+        parser.parse_characters("to")
+        dst_ty = parser.parse_attribute()      # 例如 memref<?xf32, strided<[1]>>
+
+        # 用解析到的类型解决未解析操作数
+        src = parser.resolve_operand(u_src, src_ty)
+        dst = parser.resolve_operand(u_dst, dst_ty)
+
+        op = CopyOp(src, dst)
+        op.attributes |= attrs
+        return op
+
+    # 可选：自定义打印，保证 round-trip
+    def print(self, printer: Printer):
+        printer.print_ssa_value(self.source)
+        printer.print_string(", ")
+        printer.print_ssa_value(self.destination)
+        printer.print_op_attributes(self.attributes, print_keyword=False)
+        printer.print_string(" : ")
+        printer.print_attribute(self.source.type)
+        printer.print_string(" to ")
+        printer.print_attribute(self.destination.type)
 
 MemRef = Dialect(
     "memref",

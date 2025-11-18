@@ -36,7 +36,9 @@ from xdsl.irdl import (
 )
 from xdsl.utils.exceptions import VerifyException
 from xdsl.utils.hints import isa
-
+from xdsl.parser import Parser
+from xdsl.printer import Printer
+from xdsl.traits import MemoryWriteEffect
 
 @dataclass(frozen=True)
 class TensorFromMemRefConstraint(
@@ -188,7 +190,7 @@ class ToTensorOp(IRDLOperation):
     writable = opt_prop_def(UnitAttr)
     restrict = opt_prop_def(UnitAttr)
 
-    assembly_format = "$memref (`restrict` $restrict^)? (`writable` $writable^)? attr-dict `:` type($memref) `to` type($tensor)"
+    # assembly_format = "$memref (`restrict` $restrict^)? (`writable` $writable^)? attr-dict `:` type($memref) `to` type($tensor)"
 
     def __init__(
         self,
@@ -207,6 +209,72 @@ class ToTensorOp(IRDLOperation):
             result_types=(TensorFromMemRefConstraint.memref_to_tensor(memref_v.type),),
             properties=properties,
         )
+
+    @classmethod
+    def parse(cls, parser: Parser) -> "ToTensorOp":
+        """
+        支持两种语法：
+        1) 显式结果类型：
+           bufferization.to_tensor %mem restrict? writable? : memref<...> to tensor<...>
+        2) 省略结果类型（隐含）：
+           bufferization.to_tensor %mem restrict? writable? : memref<...>
+           此时结果类型由 memref 类型推导。
+        """
+        # 1) 操作数
+        u_mem = parser.parse_unresolved_operand()
+
+        # 2) 可选关键字，顺序无关
+        restrict_flag = False
+        writable_flag = False
+        while True:
+            if parser.parse_optional_characters("restrict") is not None:
+                restrict_flag = True
+                continue
+            if parser.parse_optional_characters("writable") is not None:
+                writable_flag = True
+                continue
+            break
+
+        # 3) 可选属性字典
+        attrs = parser.parse_optional_attr_dict()
+
+        # 4) 解析 ": memref<...>"
+        parser.parse_punctuation(":")
+        memref_ty = parser.parse_attribute()
+
+        # 5) 可选 "to tensor<...>"
+        if parser.parse_optional_characters("to") is not None:
+            # 显式结果类型
+            tensor_ty = parser.parse_attribute()
+        else:
+            # 隐式：由 memref 类型推导
+            tensor_ty = TensorFromMemRefConstraint.memref_to_tensor(memref_ty)
+
+        # 6) 解决未解析操作数类型
+        mem = parser.resolve_operand(u_mem, memref_ty)
+
+        # 7) 构建 op
+        op = ToTensorOp(
+            mem,
+            # tensor_ty,
+            restrict=restrict_flag,
+            writable=writable_flag,
+        )
+        op.attributes |= attrs
+        return op
+
+    def print(self, printer: Printer):
+        # 统一打印为显式形式，保证 round-trip 稳定
+        printer.print_ssa_value(self.memref)
+        if self.restrict is not None:
+            printer.print_string(" restrict")
+        if self.writable is not None:
+            printer.print_string(" writable")
+        printer.print_op_attributes(self.attributes, print_keyword=False)
+        printer.print_string(" : ")
+        printer.print_attribute(self.memref.type)
+        printer.print_string(" to ")
+        printer.print_attribute(self.tensor.type)
 
 
 @irdl_op_definition
@@ -228,7 +296,8 @@ class MaterializeInDestinationOp(IRDLOperation):
 
     T: ClassVar = VarConstraint("T", MemRefType.constr() | AnyUnrankedMemRefTypeConstr)
     source = operand_def(TensorFromMemRefConstraint(T))
-    dest = operand_def(T | TensorFromMemRefConstraint(T))
+    # dest = operand_def(T | TensorFromMemRefConstraint(T))
+    dest = operand_def(MemRefType.constr() | AnyUnrankedMemRefTypeConstr | TensorFromMemRefConstraint(T))
     result = opt_result_def(TensorFromMemRefConstraint(T))
 
     restrict = opt_prop_def(UnitAttr)
@@ -236,6 +305,30 @@ class MaterializeInDestinationOp(IRDLOperation):
 
     assembly_format = "$source `in` (`restrict` $restrict^)? (`writable` $writable^)? $dest attr-dict `:` functional-type(operands, results)"  # noqa: E501
 
+    def verify_(self) -> None:
+        # 如果 dest 是 memref / unranked memref，则检查与 source(tensor) 的元素类型和秩/静态维是否匹配
+        src_ty = self.source.type
+        dst_ty = self.dest.type
+
+        # 张量 -> memref：元素类型必须一致；秩需一致；静态维必须相等（动态维放过）
+        def _same_elem(ten: TensorType, mem: MemRefType) -> bool:
+            return ten.get_element_type() == mem.get_element_type()
+
+        if isinstance(dst_ty, MemRefType):
+            if not _same_elem(src_ty, dst_ty):
+                raise VerifyException("source tensor and dest memref must have the same element type.")
+            t_shape = src_ty.get_shape()
+            m_shape = dst_ty.get_shape()
+            if len(t_shape) != len(m_shape):
+                raise VerifyException("rank mismatch between source tensor and dest memref.")
+            for i, (ts, ms) in enumerate(zip(t_shape, m_shape, strict=True)):
+                # 张量是动态 或 memref 是动态：放过；否则要求相等
+                if ts == -1 or ms == -1:
+                    continue
+                if ts != ms:
+                    raise VerifyException(f"dimension {i} mismatch: tensor {ts} vs memref {ms}.")
+        # UnrankedMemRefType：无法静态校验形状，跳过（运行时保证）
+        # 如果 dest 是 TensorFromMemRefConstraint(T)，它与 source 同构，无需额外校验
 
 Bufferization = Dialect(
     "bufferization",

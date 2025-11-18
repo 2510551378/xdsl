@@ -18,7 +18,13 @@ from xdsl.dialects.builtin import (
     UnrankedTensorType,
     i64,
 )
+
+from xdsl.dialects.utils import (
+    split_dynamic_index_list,
+)
+
 from xdsl.dialects.utils.dynamic_index_list import (
+    verify_dynamic_index_list,
     parse_dynamic_index_list_without_types,
     print_dynamic_index_list,
 )
@@ -425,6 +431,14 @@ class ExtractSliceOp(IRDLOperation):
 
     traits = traits_def(NoMemoryEffect())
 
+    assembly_format = (
+        "$source ``"
+        "custom<DynamicIndexList>($offsets, $static_offsets)"
+        "custom<DynamicIndexList>($sizes, $static_sizes)"
+        "custom<DynamicIndexList>($strides, $static_strides)"
+        "attr-dict `:` type($source) `to` type($result)"
+    )
+
     @staticmethod
     def from_static_parameters(
         source: SSAValue | Operation,
@@ -453,6 +467,65 @@ class ExtractSliceOp(IRDLOperation):
                 "static_sizes": DenseArrayBase.from_list(i64, result_sizes),
                 "static_strides": DenseArrayBase.from_list(i64, strides),
             },
+        )
+
+    def __init__(
+        self,
+        source: SSAValue | Operation,
+        offsets: Sequence[SSAValue],
+        sizes: Sequence[SSAValue],
+        strides: Sequence[SSAValue],
+        static_offsets: Sequence[int] | DenseArrayBase,
+        static_sizes: Sequence[int] | DenseArrayBase,
+        static_strides: Sequence[int] | DenseArrayBase,
+        result_type: TensorType,
+    ):
+        if not isinstance(static_offsets, DenseArrayBase):
+            static_offsets = DenseArrayBase.from_list(i64, static_offsets)
+        if not isinstance(static_sizes, DenseArrayBase):
+            static_sizes = DenseArrayBase.from_list(i64, static_sizes)
+        if not isinstance(static_strides, DenseArrayBase):
+            static_strides = DenseArrayBase.from_list(i64, static_strides)
+
+        super().__init__(
+            operands=[source, offsets, sizes, strides],
+            result_types=[result_type],
+            properties={
+                "static_offsets": static_offsets,
+                "static_sizes": static_sizes,
+                "static_strides": static_strides,
+            },
+        )
+
+    def verify_(self) -> None:
+        verify_dynamic_index_list(
+            self.static_offsets.get_values(), self.offsets, DYNAMIC_INDEX,
+            " in the offset arguments"
+        )
+        verify_dynamic_index_list(
+            self.static_sizes.get_values(), self.sizes, DYNAMIC_INDEX,
+            " in the size arguments"
+        )
+        verify_dynamic_index_list(
+            self.static_strides.get_values(), self.strides, DYNAMIC_INDEX,
+            " in the stride arguments"
+        )
+
+    @staticmethod
+    def from_dynamic(
+        source: SSAValue,
+        offsets: Sequence[SSAValue | int],
+        sizes: Sequence[SSAValue | int],
+        strides: Sequence[SSAValue | int],
+        result_type: TensorType,
+    ) -> "ExtractSliceOp":
+        static_offsets, dyn_offsets = split_dynamic_index_list(offsets, DYNAMIC_INDEX)
+        static_sizes,  dyn_sizes    = split_dynamic_index_list(sizes,  DYNAMIC_INDEX)
+        static_strides, dyn_strides = split_dynamic_index_list(strides, DYNAMIC_INDEX)
+        return ExtractSliceOp(
+            source, dyn_offsets, dyn_sizes, dyn_strides,
+            static_offsets, static_sizes, static_strides,
+            result_type,
         )
 
 
