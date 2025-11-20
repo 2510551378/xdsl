@@ -265,6 +265,7 @@ class ToTensorOp(IRDLOperation):
 
     def print(self, printer: Printer):
         # 统一打印为显式形式，保证 round-trip 稳定
+        printer.print_string(" ")
         printer.print_ssa_value(self.memref)
         if self.restrict is not None:
             printer.print_string(" restrict")
@@ -273,8 +274,8 @@ class ToTensorOp(IRDLOperation):
         printer.print_op_attributes(self.attributes, print_keyword=False)
         printer.print_string(" : ")
         printer.print_attribute(self.memref.type)
-        printer.print_string(" to ")
-        printer.print_attribute(self.tensor.type)
+        # printer.print_string(" to ")
+        # printer.print_attribute(self.tensor.type)
 
 
 @irdl_op_definition

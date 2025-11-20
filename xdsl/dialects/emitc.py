@@ -33,6 +33,7 @@ from xdsl.dialects.builtin import (
 )
 from xdsl.ir import (
     Attribute,
+    Operation,
     Dialect,
     ParametrizedAttribute,
     SSAValue,
@@ -498,11 +499,52 @@ class EmitC_CallOpaqueOp(IRDLOperation):
             if isinstance(res_type, EmitC_ArrayType):
                 raise VerifyException("cannot return array type")
 
+@irdl_op_definition
+class EmitC_CastOp(IRDLOperation):
+    """
+    emitc.cast %src : from_type to to_type
+
+    语义：单输入一输出的类型转换，xDSL 这里只做最弱约束：
+      - operand 和 result 类型完全自由（AnyAttr），不在 verify_ 里加规则；
+      - 主要用于在 AC→EmitC 降低里产生 emitc.cast，从而减少 builtin.unrealized_conversion_cast。
+    """
+
+    name = "emitc.cast"
+
+    src = operand_def(AnyAttr())
+    res = result_def(AnyAttr())
+
+    # 打印成：
+    #   emitc.cast %v : i32 to !emitc.size_t
+    assembly_format = "$src `:` type($src) `to` type($res) attr-dict"
+
+    def __init__(
+        self,
+        src: SSAValue | Operation,
+        res_type: Attribute,
+    ):
+        src = SSAValue.get(src)
+        super().__init__(operands=[src], result_types=[res_type])
+
+    @staticmethod
+    def get(
+        src: SSAValue | Operation,
+        res_type: Attribute,
+    ) -> "EmitC_CastOp":
+        """
+        方便在 pass 里用 EmitC_CastOp.get(...) 构造。
+        """
+        return EmitC_CastOp(src, res_type)
+
+    # 如果暂时不想做类型检查，可以不写 verify_，保持完全宽松。
+    # 将来如果你想收紧规则（比如只允许整型 <-> size_t，或者 ptr <-> ptrdiff_t），
+    # 再在这里加 verify_ 即可。
 
 EmitC = Dialect(
     "emitc",
     [
         EmitC_AddOp,
+        EmitC_CastOp,
         EmitC_ApplyOp,
         EmitC_CallOpaqueOp,
     ],
